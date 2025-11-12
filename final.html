@@ -43,20 +43,20 @@
     <label>兜底/探顶价格: <input id="price" type="number" step="any" placeholder="例如 30000" /></label>
     <button id="search">搜索</button>
     <button id="save">保存查询</button>
-    <!-- 控制按钮 -->
-    <button id="toggle-ma">隐藏均线</button>
-    <button id="toggle-boll">隐藏BOLL轨道</button>
+    <button id="toggle-ma">隐藏/显示均线</button>
+    <button id="toggle-boll">隐藏/显示BOLL轨道</button>
   </div>
 
   <div id="chart"></div>
 
-  <!-- 图例 -->
   <div class="legend">
     <span><i style="background:orange"></i>MA5</span>
     <span><i style="background:gold"></i>MA10</span>
     <span><i style="background:blue"></i>MA20</span>
     <span><i style="background:purple"></i>MA60</span>
-    <span><i style="background:rgba(0,128,255,0.6)"></i>BOLL轨道</span>
+    <span><i style="background:#00f"></i>BOLL上轨</span>
+    <span><i style="background:#0a0"></i>BOLL中轨</span>
+    <span><i style="background:#f0f"></i>BOLL下轨</span>
   </div>
 
   <div id="history">
@@ -96,19 +96,17 @@
     color: 'rgba(76,175,80,0.5)'
   });
 
-  // 均线（去掉右侧价格虚线）
-  const ma5Series = chart.addLineSeries({ color: 'orange', lineWidth: 1, lastValueVisible: false, priceLineVisible: false });
-  const ma10Series = chart.addLineSeries({ color: 'gold', lineWidth: 1, lastValueVisible: false, priceLineVisible: false });
-  const ma20Series = chart.addLineSeries({ color: 'blue', lineWidth: 1, lastValueVisible: false, priceLineVisible: false });
-  const ma60Series = chart.addLineSeries({ color: 'purple', lineWidth: 1, lastValueVisible: false, priceLineVisible: false });
+  const ma5Series = chart.addLineSeries({ color: 'orange', lineWidth: 1, priceLineVisible:false });
+  const ma10Series = chart.addLineSeries({ color: 'gold', lineWidth: 1, priceLineVisible:false });
+  const ma20Series = chart.addLineSeries({ color: 'blue', lineWidth: 1, priceLineVisible:false });
+  const ma60Series = chart.addLineSeries({ color: 'purple', lineWidth: 1, priceLineVisible:false });
 
-  // 布林带（去掉右侧价格虚线）
-  const bbUpperSeries = chart.addLineSeries({ color: 'rgba(0,128,255,0.6)', lineWidth: 1, lastValueVisible: false, priceLineVisible: false });
-  const bbMiddleSeries = chart.addLineSeries({ color: 'rgba(0,128,255,0.4)', lineWidth: 1, lineStyle: 1, lastValueVisible: false, priceLineVisible: false });
-  const bbLowerSeries = chart.addLineSeries({ color: 'rgba(0,128,255,0.6)', lineWidth: 1, lastValueVisible: false, priceLineVisible: false });
+  const bollUpperSeries = chart.addLineSeries({ color:'#00f', lineWidth:1, priceLineVisible:false });
+  const bollMiddleSeries = chart.addLineSeries({ color:'#0a0', lineWidth:1, priceLineVisible:false });
+  const bollLowerSeries = chart.addLineSeries({ color:'#f0f', lineWidth:1, priceLineVisible:false });
 
-  // 我们不再使用 createPriceLine 绘制当前价格的红线（已移除）
   let currentPriceLine = null;
+  let maVisible=true, bollVisible=true;
 
   const intervalToMs = { '1m':60000,'3m':180000,'5m':300000,'15m':900000,'30m':1800000,'1h':3600000,'4h':14400000,'1d':86400000 };
   function toChinaTime(ts){ return ts + 8 * 3600 * 1000; }
@@ -150,33 +148,31 @@
     ma20Series.setData(movingAverage(candles,20));
     ma60Series.setData(movingAverage(candles,60));
 
-    // 布林带计算（并绘制，但不显示右侧价格线）
-    function bollingerBands(data, n = 20, k = 2) {
-      const res = [];
-      for (let i = 0; i < data.length; i++) {
-        if (i < n - 1) continue;
-        const slice = data.slice(i - n + 1, i + 1);
-        const closes = slice.map(c => c.close);
-        const mean = closes.reduce((a, b) => a + b, 0) / n;
-        const variance = closes.reduce((a, b) => a + (b - mean) ** 2, 0) / n;
-        const std = Math.sqrt(variance);
-        res.push({
-          time: data[i].time,
-          upper: mean + k * std,
-          middle: mean,
-          lower: mean - k * std
-        });
+    // 计算BOLL
+    function boll(data,n=20,k=2){
+      const middle=[],upper=[],lower=[];
+      for(let i=n-1;i<data.length;i++){
+        let sum=0; for(let j=i-n+1;j<=i;j++) sum+=data[j].close;
+        const ma=sum/n;
+        let std=0; for(let j=i-n+1;j<=i;j++) std += Math.pow(data[j].close-ma,2);
+        std = Math.sqrt(std/n);
+        middle.push({time:data[i].time,value:ma});
+        upper.push({time:data[i].time,value:ma+k*std});
+        lower.push({time:data[i].time,value:ma-k*std});
       }
-      return res;
+      return {upper,middle,lower};
     }
+    const b=boll(candles,20,2);
+    bollUpperSeries.setData(b.upper);
+    bollMiddleSeries.setData(b.middle);
+    bollLowerSeries.setData(b.lower);
 
-    const bb = bollingerBands(candles, 20, 2);
-    bbUpperSeries.setData(bb.map(b => ({ time: b.time, value: b.upper })));
-    bbMiddleSeries.setData(bb.map(b => ({ time: b.time, value: b.middle })));
-    bbLowerSeries.setData(bb.map(b => ({ time: b.time, value: b.lower })));
-
-    // 不再创建右侧的当前价格线（删除 createPriceLine）
-    // 如果你还想在图上以其它方式标示用户输入的 price（例如 marker 或水平线），我可以按你想法加回去。
+    // 红色兜底/探顶价格
+    const price=parseFloat(priceInput);
+    if(currentPriceLine) candleSeries.removePriceLine(currentPriceLine);
+    currentPriceLine=candleSeries.createPriceLine({
+      price,color:'red',lineWidth:2,axisLabelVisible:true,title:'兜底/探顶价',lineStyle:0
+    });
 
     const targetSec = Math.floor(toChinaTime(targetTs)/1000);
     let nearest=null, diff=Infinity;
@@ -201,28 +197,24 @@
     catch(e){alert('加载失败:'+e.message);}
   });
 
-  // 均线显示控制
-  let maVisible = true;
-  document.getElementById('toggle-ma').addEventListener('click', () => {
-    maVisible = !maVisible;
-    ma5Series.applyOptions({ visible: maVisible });
-    ma10Series.applyOptions({ visible: maVisible });
-    ma20Series.applyOptions({ visible: maVisible });
-    ma60Series.applyOptions({ visible: maVisible });
-    document.getElementById('toggle-ma').textContent = maVisible ? '隐藏均线' : '显示均线';
+  // 切换均线显示
+  document.getElementById('toggle-ma').addEventListener('click',()=>{
+    maVisible=!maVisible;
+    ma5Series.applyOptions({visible:maVisible});
+    ma10Series.applyOptions({visible:maVisible});
+    ma20Series.applyOptions({visible:maVisible});
+    ma60Series.applyOptions({visible:maVisible});
   });
 
-  // 布林带显示控制
-  let bollVisible = true;
-  document.getElementById('toggle-boll').addEventListener('click', () => {
-    bollVisible = !bollVisible;
-    bbUpperSeries.applyOptions({ visible: bollVisible });
-    bbMiddleSeries.applyOptions({ visible: bollVisible });
-    bbLowerSeries.applyOptions({ visible: bollVisible });
-    document.getElementById('toggle-boll').textContent = bollVisible ? '隐藏BOLL轨道' : '显示BOLL轨道';
+  // 切换BOLL显示
+  document.getElementById('toggle-boll').addEventListener('click',()=>{
+    bollVisible=!bollVisible;
+    bollUpperSeries.applyOptions({visible:bollVisible});
+    bollMiddleSeries.applyOptions({visible:bollVisible});
+    bollLowerSeries.applyOptions({visible:bollVisible});
   });
 
-  // 历史记录逻辑原样保留
+  // 历史记录管理（保持原有逻辑）
   function renderHistory(filter={}) {
     const list = document.getElementById('history-list');
     let history = JSON.parse(localStorage.getItem('searchHistory') || '[]');
