@@ -43,5 +43,7 @@
 #### 🔧 使用方法
 
 下载final.html文件到本地，使用浏览器打开即可。
+<img width="1714" height="630" alt="image" src="https://github.com/user-attachments/assets/5c30d998-3d94-494c-87c4-598642094095" />
+
 
 欢迎社区小伙伴在使用过程中扩展功能，相互分享，共建社区。
