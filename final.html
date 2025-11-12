@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>潜力区币回测工具</title>
+  <style>
+    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial;padding:20px;}
+    .controls{display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
+    label{font-size:14px}
+    input,select,button{padding:6px 8px;font-size:14px}
+    #chart{width:100%;height:600px;border:1px solid #e6e6e6;margin-bottom:8px;}
+    .legend{font-size:13px;margin-bottom:12px;}
+    .legend span{display:inline-flex;align-items:center;margin-right:10px;}
+    .legend i{display:inline-block;width:20px;height:3px;margin-right:5px;border-radius:2px;}
+    .hint{color:#666;margin-top:6px;font-size:13px}
+    #history{background:#f7f7f7;padding:10px;border-radius:8px;margin-bottom:12px;}
+    .history-item{cursor:pointer;padding:6px 10px;margin:4px 0;background:#eee;border-radius:5px;}
+    .history-item:hover{background:#ddd;}
+    .history-controls{margin-top:10px;}
+    #history-filters{margin-bottom:10px;}
+  </style>
+  <script src="https://unpkg.com/lightweight-charts@3.7.0/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+  <h2>潜力区币回测工具</h2>
+
+  <div class="controls">
+    <label>交易对: <input id="symbol" value="BTCUSDT" /></label>
+    <label>时间: <input id="time" type="datetime-local" /></label>
+    <label>周期:
+      <select id="interval">
+        <option value="1m">1m</option>
+        <option value="3m">3m</option>
+        <option value="5m">5m</option>
+        <option value="15m">15m</option>
+        <option value="30m">30m</option>
+        <option value="1h" selected>1h</option>
+        <option value="4h">4h</option>
+        <option value="1d">1d</option>
+      </select>
+    </label>
+    <label>兜底/探顶价格: <input id="price" type="number" step="any" placeholder="例如 30000" /></label>
+    <button id="search">搜索</button>
+    <button id="save">保存查询</button>
+    <!-- 控制按钮 -->
+    <button id="toggle-ma">隐藏均线</button>
+    <button id="toggle-boll">隐藏BOLL轨道</button>
+  </div>
+
+  <div id="chart"></div>
+
+  <!-- 图例 -->
+  <div class="legend">
+    <span><i style="background:orange"></i>MA5</span>
+    <span><i style="background:gold"></i>MA10</span>
+    <span><i style="background:blue"></i>MA20</span>
+    <span><i style="background:purple"></i>MA60</span>
+    <span><i style="background:rgba(0,128,255,0.6)"></i>BOLL轨道</span>
+  </div>
+
+  <div id="history">
+    <h3>历史查询记录</h3>
+    <div id="history-filters">
+      <label>币种筛选: <input id="filter-symbol" placeholder="如 BTCUSDT" /></label>
+      <label>起始时间: <input type="datetime-local" id="filter-start" /></label>
+      <label>结束时间: <input type="datetime-local" id="filter-end" /></label>
+      <button id="filter-button">筛选</button>
+      <button id="filter-reset">重置</button>
+    </div>
+    <div id="history-list"></div>
+    <div class="history-controls">
+      <button id="clear-history">清空历史</button>
+      <button id="export-history">导出历史</button>
+      <input type="file" id="import-file" style="display:none" />
+      <button id="import-history">导入历史</button>
+    </div>
+  </div>
+
+  <div class="hint">说明：时间自动使用中国时区 (UTC+8)。查询记录可以导出和导入，清除浏览器缓存前请务必将查询记录导出保存。</div>
+  <div class="hint">数据来源：币安（Binance）公共API，支持所有币安交易对。</div>
+
+<script>
+(function(){
+  const chartContainer = document.getElementById('chart');
+  const chart = LightweightCharts.createChart(chartContainer, {
+    layout: { background: { type: 'solid', color: '#ffffff' }, textColor: '#000' },
+    rightPriceScale: { scaleMargins: { top: 0.1, bottom: 0.25 } },
+    timeScale: { timeVisible: true, secondsVisible: false }
+  });
+
+  const candleSeries = chart.addCandlestickSeries();
+  const volumeSeries = chart.addHistogramSeries({
+    priceScaleId: '',
+    scaleMargins: { top: 0.75, bottom: 0 },
+    color: 'rgba(76,175,80,0.5)'
+  });
+
+  // 均线（去掉右侧价格虚线）
+  const ma5Series = chart.addLineSeries({ color: 'orange', lineWidth: 1, lastValueVisible: false, priceLineVisible: false });
+  const ma10Series = chart.addLineSeries({ color: 'gold', lineWidth: 1, lastValueVisible: false, priceLineVisible: false });
+  const ma20Series = chart.addLineSeries({ color: 'blue', lineWidth: 1, lastValueVisible: false, priceLineVisible: false });
+  const ma60Series = chart.addLineSeries({ color: 'purple', lineWidth: 1, lastValueVisible: false, priceLineVisible: false });
+
+  // 布林带（去掉右侧价格虚线）
+  const bbUpperSeries = chart.addLineSeries({ color: 'rgba(0,128,255,0.6)', lineWidth: 1, lastValueVisible: false, priceLineVisible: false });
+  const bbMiddleSeries = chart.addLineSeries({ color: 'rgba(0,128,255,0.4)', lineWidth: 1, lineStyle: 1, lastValueVisible: false, priceLineVisible: false });
+  const bbLowerSeries = chart.addLineSeries({ color: 'rgba(0,128,255,0.6)', lineWidth: 1, lastValueVisible: false, priceLineVisible: false });
+
+  // 我们不再使用 createPriceLine 绘制当前价格的红线（已移除）
+  let currentPriceLine = null;
+
+  const intervalToMs = { '1m':60000,'3m':180000,'5m':300000,'15m':900000,'30m':1800000,'1h':3600000,'4h':14400000,'1d':86400000 };
+  function toChinaTime(ts){ return ts + 8 * 3600 * 1000; }
+
+  async function loadChart(symbol, timeInput, interval, priceInput){
+    const local = new Date(timeInput);
+    const targetTs = local.getTime() - local.getTimezoneOffset()*60000 - 8*3600000;
+    const ms = intervalToMs[interval] || 3600000;
+    const startTime = targetTs - 200*ms;
+    const endTime = targetTs + 200*ms;
+    const limit = Math.min(1000, 400);
+    const url = `https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&startTime=${startTime}&endTime=${endTime}&limit=${limit}`;
+
+    const resp = await fetch(url);
+    const data = await resp.json();
+    if(!Array.isArray(data)||data.length===0)throw new Error('无数据');
+
+    const candles = data.map(d=>({
+      time: Math.floor(toChinaTime(d[0]) / 1000),
+      open:+d[1],high:+d[2],low:+d[3],close:+d[4],volume:+d[5]
+    }));
+
+    candleSeries.setData(candles);
+    volumeSeries.setData(candles.map(c=>({
+      time:c.time,value:c.volume,color:c.close>=c.open?'rgba(76,175,80,0.5)':'rgba(255,82,82,0.5)'
+    })));
+
+    function movingAverage(data, n){
+      const res=[]; let sum=0;
+      for(let i=0;i<data.length;i++){
+        sum+=data[i].close;
+        if(i>=n) sum-=data[i-n].close;
+        if(i>=n-1) res.push({time:data[i].time, value:sum/n});
+      }
+      return res;
+    }
+    ma5Series.setData(movingAverage(candles,5));
+    ma10Series.setData(movingAverage(candles,10));
+    ma20Series.setData(movingAverage(candles,20));
+    ma60Series.setData(movingAverage(candles,60));
+
+    // 布林带计算（并绘制，但不显示右侧价格线）
+    function bollingerBands(data, n = 20, k = 2) {
+      const res = [];
+      for (let i = 0; i < data.length; i++) {
+        if (i < n - 1) continue;
+        const slice = data.slice(i - n + 1, i + 1);
+        const closes = slice.map(c => c.close);
+        const mean = closes.reduce((a, b) => a + b, 0) / n;
+        const variance = closes.reduce((a, b) => a + (b - mean) ** 2, 0) / n;
+        const std = Math.sqrt(variance);
+        res.push({
+          time: data[i].time,
+          upper: mean + k * std,
+          middle: mean,
+          lower: mean - k * std
+        });
+      }
+      return res;
+    }
+
+    const bb = bollingerBands(candles, 20, 2);
+    bbUpperSeries.setData(bb.map(b => ({ time: b.time, value: b.upper })));
+    bbMiddleSeries.setData(bb.map(b => ({ time: b.time, value: b.middle })));
+    bbLowerSeries.setData(bb.map(b => ({ time: b.time, value: b.lower })));
+
+    // 不再创建右侧的当前价格线（删除 createPriceLine）
+    // 如果你还想在图上以其它方式标示用户输入的 price（例如 marker 或水平线），我可以按你想法加回去。
+
+    const targetSec = Math.floor(toChinaTime(targetTs)/1000);
+    let nearest=null, diff=Infinity;
+    for(const c of candles){const d=Math.abs(c.time-targetSec);if(d<diff){diff=d;nearest=c;}}
+    if(nearest){
+      candleSeries.setMarkers([{time:nearest.time,position:'belowBar',color:'blue',shape:'arrowUp',text:'发布时间',size:3}]);
+      const idx=candles.findIndex(c=>c.time===nearest.time);
+      const from=candles[Math.max(0,idx-80)].time;
+      const to=candles[Math.min(candles.length-1,idx+80)].time;
+      chart.timeScale().setVisibleRange({from,to});
+    }
+  }
+
+  // 搜索按钮
+  document.getElementById('search').addEventListener('click', async ()=>{
+    const symbol = document.getElementById('symbol').value.trim().toUpperCase();
+    const timeInput = document.getElementById('time').value;
+    const interval = document.getElementById('interval').value;
+    const priceInput = document.getElementById('price').value.trim();
+    if(!symbol||!timeInput||!priceInput){alert('请输入完整参数');return;}
+    try{ await loadChart(symbol,timeInput,interval,priceInput); }
+    catch(e){alert('加载失败:'+e.message);}
+  });
+
+  // 均线显示控制
+  let maVisible = true;
+  document.getElementById('toggle-ma').addEventListener('click', () => {
+    maVisible = !maVisible;
+    ma5Series.applyOptions({ visible: maVisible });
+    ma10Series.applyOptions({ visible: maVisible });
+    ma20Series.applyOptions({ visible: maVisible });
+    ma60Series.applyOptions({ visible: maVisible });
+    document.getElementById('toggle-ma').textContent = maVisible ? '隐藏均线' : '显示均线';
+  });
+
+  // 布林带显示控制
+  let bollVisible = true;
+  document.getElementById('toggle-boll').addEventListener('click', () => {
+    bollVisible = !bollVisible;
+    bbUpperSeries.applyOptions({ visible: bollVisible });
+    bbMiddleSeries.applyOptions({ visible: bollVisible });
+    bbLowerSeries.applyOptions({ visible: bollVisible });
+    document.getElementById('toggle-boll').textContent = bollVisible ? '隐藏BOLL轨道' : '显示BOLL轨道';
+  });
+
+  // 历史记录逻辑原样保留
+  function renderHistory(filter={}) {
+    const list = document.getElementById('history-list');
+    let history = JSON.parse(localStorage.getItem('searchHistory') || '[]');
+    if(filter.symbol){
+      const s = filter.symbol.trim().toUpperCase();
+      history = history.filter(item => item.symbol.toUpperCase().includes(s));
+    }
+    if(filter.start){
+      const startTs = new Date(filter.start).getTime();
+      history = history.filter(item => new Date(item.time).getTime() >= startTs);
+    }
+    if(filter.end){
+      const endTs = new Date(filter.end).getTime();
+      history = history.filter(item => new Date(item.time).getTime() <= endTs);
+    }
+    history.sort((a,b)=>new Date(b.time) - new Date(a.time));
+    list.innerHTML = '';
+    history.forEach(item => {
+      const div = document.createElement('div');
+      div.className = 'history-item';
+      div.textContent = `${item.symbol}｜${item.interval}｜${item.time}｜${item.price}`;
+      div.onclick = () => {
+        document.getElementById('symbol').value = item.symbol;
+        document.getElementById('interval').value = item.interval;
+        document.getElementById('time').value = item.time;
+        document.getElementById('price').value = item.price;
+        document.getElementById('search').click();
+      };
+      list.appendChild(div);
+    });
+  }
+
+  document.getElementById('save').addEventListener('click', ()=>{
+    const symbol = document.getElementById('symbol').value.trim().toUpperCase();
+    const time = document.getElementById('time').value;
+    const interval = document.getElementById('interval').value;
+    const price = document.getElementById('price').value.trim();
+    if(!symbol||!time||!price){alert('请输入完整参数');return;}
+    const history = JSON.parse(localStorage.getItem('searchHistory')||'[]');
+    history.unshift({symbol,time,interval,price});
+    localStorage.setItem('searchHistory',JSON.stringify(history));
+    renderHistory();
+  });
+
+  document.getElementById('filter-button').addEventListener('click', () => {
+    const symbol = document.getElementById('filter-symbol').value;
+    const start = document.getElementById('filter-start').value;
+    const end = document.getElementById('filter-end').value;
+    renderHistory({symbol,start,end});
+  });
+  document.getElementById('filter-reset').addEventListener('click', () => {
+    document.getElementById('filter-symbol').value='';
+    document.getElementById('filter-start').value='';
+    document.getElementById('filter-end').value='';
+    renderHistory();
+  });
+  document.getElementById('clear-history').addEventListener('click',()=>{localStorage.removeItem('searchHistory');renderHistory();});
+  document.getElementById('export-history').addEventListener('click', ()=>{
+    const history = localStorage.getItem('searchHistory');
+    if(!history){alert('暂无历史记录'); return;}
+    const blob = new Blob([history], {type:'application/json'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `search_history_${new Date().toISOString().slice(0,10)}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+  const importFile = document.getElementById('import-file');
+  document.getElementById('import-history').addEventListener('click', ()=>{ importFile.click(); });
+  importFile.addEventListener('change', (e)=>{
+    const file = e.target.files[0];
+    if(!file) return;
+    const reader = new FileReader();
+    reader.onload = function(evt){
+      try{
+        const data = JSON.parse(evt.target.result);
+        if(!Array.isArray(data)) throw new Error('文件格式错误');
+        let history = JSON.parse(localStorage.getItem('searchHistory')||'[]');
+        history = history.concat(data);
+        history.sort((a,b)=>new Date(b.time)-new Date(a.time));
+        localStorage.setItem('searchHistory', JSON.stringify(history));
+        renderHistory();
+        alert('导入成功');
+      }catch(err){ alert('导入失败:'+err.message); }
+    };
+    reader.readAsText(file);
+    importFile.value='';
+  });
+
+  (function(){
+    const dt=new Date(Date.now()+8*3600*1000);
+    const pad=n=>String(n).padStart(2,'0');
+    const s=`${dt.getUTCFullYear()}-${pad(dt.getUTCMonth()+1)}-${pad(dt.getUTCDate())}T${pad(dt.getUTCHours())}:${pad(dt.getUTCMinutes())}`;
+    document.getElementById('time').value=s;
+    renderHistory();
+  })();
+})();
+</script>
+</body>
+</html>
